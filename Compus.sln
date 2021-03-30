@@ -1,8 +1,8 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Compus", "Compus\Compus.csproj", "{F6F46488-3526-4880-B3D5-63AFF39ACD70}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Compus", "src/Compus/Compus.csproj", "{F6F46488-3526-4880-B3D5-63AFF39ACD70}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Compus.Tests", "Compus.Tests\Compus.Tests.csproj", "{0AFED91B-B629-4D5D-8F4A-1187CCBF65CB}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Compus.Tests", "tests/Compus.Tests/Compus.Tests.csproj", "{0AFED91B-B629-4D5D-8F4A-1187CCBF65CB}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

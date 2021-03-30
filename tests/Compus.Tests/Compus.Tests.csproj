@@ -15,7 +15,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <ProjectReference Include="../Compus/Compus.csproj" />
+        <ProjectReference Include="../../src/Compus/Compus.csproj" />
     </ItemGroup>
 
     <ItemGroup>
