@@ -42,6 +42,11 @@ namespace Compus.Resources
             return id._value;
         }
 
+        public override string ToString()
+        {
+            return _value.ToString();
+        }
+
         #region Equality
 
         public static IFullEqualityComparer<Snowflake> EqualityComparer { get; } = new Identity<Snowflake>()
