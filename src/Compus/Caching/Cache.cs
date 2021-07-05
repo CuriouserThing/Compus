@@ -40,7 +40,6 @@ namespace Compus.Caching
         private readonly DateTimeOffset _epoch;
         private readonly IEqualityComparer<TKey> _keyComparer;
         private readonly Func<TItem, TKey> _keySelector;
-        private readonly object _syncRoot = new();
 
         private int[] _bucketHeads;
         private int _count;
@@ -136,43 +135,34 @@ namespace Compus.Caching
 
         public void Add(Cached<TItem> value)
         {
-            lock (_syncRoot)
+            TKey key = _keySelector(value.Item);
+            ref int link = ref GetIndex(key);
+            if (link > -1)
             {
-                TKey key = _keySelector(value.Item);
-                ref int link = ref GetIndex(key);
-                if (link > -1)
-                {
-                    throw new ArgumentException($"The key {key} embedded in the value {value} already exists in this cache.", nameof(value));
-                }
-
-                Add(ref link, value);
+                throw new ArgumentException($"The key {key} embedded in the value {value} already exists in this cache.", nameof(value));
             }
+
+            Add(ref link, value);
         }
 
         public bool Remove(Cached<TItem> value)
         {
-            lock (_syncRoot)
+            TKey key = _keySelector(value.Item);
+            ref int link = ref GetIndex(key);
+            if (link < 0 || !ItemFromEntry(_entries[link]).Equals(value))
             {
-                TKey key = _keySelector(value.Item);
-                ref int link = ref GetIndex(key);
-                if (link < 0 || !ItemFromEntry(_entries[link]).Equals(value))
-                {
-                    return false;
-                }
-
-                Remove(ref link);
-                return true;
+                return false;
             }
+
+            Remove(ref link);
+            return true;
         }
 
         public void Clear()
         {
-            lock (_syncRoot)
-            {
-                InitArrays(Capacity, out _bucketHeads, out _entries);
-                _count = 0;
-                ResetHeadAndTail();
-            }
+            InitArrays(Capacity, out _bucketHeads, out _entries);
+            _count = 0;
+            ResetHeadAndTail();
         }
 
         public Cached<TItem> this[TKey key]
@@ -192,39 +182,30 @@ namespace Compus.Caching
             {
                 if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
-                lock (_syncRoot)
-                {
-                    ref int link = ref GetIndex(key, value.Item);
-                    Add(ref link, value);
-                }
+                ref int link = ref GetIndex(key, value.Item);
+                Add(ref link, value);
             }
         }
 
         public bool ContainsKey(TKey key)
         {
-            lock (_syncRoot)
-            {
-                return GetIndex(key) > -1;
-            }
+            return GetIndex(key) > -1;
         }
 
         public bool TryGetValue(TKey key, [NotNullWhen(true)] out Cached<TItem> item)
         {
             if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
-            lock (_syncRoot)
+            int index = GetIndex(key);
+            if (index > -1)
             {
-                int index = GetIndex(key);
-                if (index > -1)
-                {
-                    item = ItemFromEntry(_entries[index]);
-                    return true;
-                }
-                else
-                {
-                    item = default(Cached<TItem>)!;
-                    return false;
-                }
+                item = ItemFromEntry(_entries[index]);
+                return true;
+            }
+            else
+            {
+                item = default(Cached<TItem>)!;
+                return false;
             }
         }
 
@@ -232,48 +213,39 @@ namespace Compus.Caching
         {
             if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
-            lock (_syncRoot)
+            ref int link = ref GetIndex(key, value.Item);
+            if (link > -1)
             {
-                ref int link = ref GetIndex(key, value.Item);
-                if (link > -1)
-                {
-                    throw new ArgumentException($"The key {key} already exists in this cache.", nameof(key));
-                }
-
-                Add(ref link, value);
+                throw new ArgumentException($"The key {key} already exists in this cache.", nameof(key));
             }
+
+            Add(ref link, value);
         }
 
         public bool Remove(TKey key)
         {
             if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
-            lock (_syncRoot)
-            {
-                ref int link = ref GetIndex(key);
-                if (link < 0) { return false; }
+            ref int link = ref GetIndex(key);
+            if (link < 0) { return false; }
 
-                Remove(ref link);
-                return true;
-            }
+            Remove(ref link);
+            return true;
         }
 
         public ICollection<TKey> Keys
         {
             get
             {
-                lock (_syncRoot)
+                var keys = new TKey[_count];
+                Entry entry = _entries[_head];
+                for (var i = 0; i < _count; i++)
                 {
-                    var keys = new TKey[_count];
-                    Entry entry = _entries[_head];
-                    for (var i = 0; i < _count; i++)
-                    {
-                        keys[i] = _keySelector(entry.Item);
-                        entry   = _entries[entry.Next];
-                    }
-
-                    return keys;
+                    keys[i] = _keySelector(entry.Item);
+                    entry   = _entries[entry.Next];
                 }
+
+                return keys;
             }
         }
 
@@ -281,18 +253,15 @@ namespace Compus.Caching
         {
             get
             {
-                lock (_syncRoot)
+                var values = new Cached<TItem>[_count];
+                Entry entry = _entries[_head];
+                for (var i = 0; i < _count; i++)
                 {
-                    var values = new Cached<TItem>[_count];
-                    Entry entry = _entries[_head];
-                    for (var i = 0; i < _count; i++)
-                    {
-                        values[i] = ItemFromEntry(entry);
-                        entry     = _entries[entry.Next];
-                    }
-
-                    return values;
+                    values[i] = ItemFromEntry(entry);
+                    entry     = _entries[entry.Next];
                 }
+
+                return values;
             }
         }
 
@@ -300,7 +269,6 @@ namespace Compus.Caching
 
         #region Heavy lifting
 
-        /// <remarks>Not thread-safe.</remarks>
         private ref int GetIndex(TKey key, TItem item)
         {
             if (_keyComparer.Equals(key, _keySelector(item)))
@@ -313,7 +281,6 @@ namespace Compus.Caching
             }
         }
 
-        /// <remarks>Not thread-safe.</remarks>
         private ref int GetIndex(TKey key)
         {
             int hash = _keyComparer.GetHashCode(key!);
@@ -333,7 +300,6 @@ namespace Compus.Caching
             return ref index;
         }
 
-        /// <remarks>Not thread-safe.</remarks>
         private void Add(ref int link, Cached<TItem> value)
         {
             if (link < 0)
@@ -388,7 +354,6 @@ namespace Compus.Caching
             }
         }
 
-        /// <remarks>Not thread-safe.</remarks>
         private void Remove(ref int link)
         {
             int index = link;
@@ -413,7 +378,6 @@ namespace Compus.Caching
             _entries[index].Timestamp  = 0;
         }
 
-        /// <remarks>Not thread-safe.</remarks>
         private void RemoveEntryFromQueueLoop(int index)
         {
             int prev = _entries[index].Prev;
@@ -428,7 +392,6 @@ namespace Compus.Caching
             _entries[next].Prev = prev;
         }
 
-        /// <remarks>Not thread-safe.</remarks>
         private void InsertEntryIntoQueueLoop(int index, int prev, int next)
         {
             _entries[index].Prev = prev;
@@ -437,7 +400,6 @@ namespace Compus.Caching
             _entries[next].Prev  = index;
         }
 
-        /// <remarks>Not thread-safe.</remarks>
         private void ResetHeadAndTail()
         {
             _head = 0;
@@ -516,15 +478,12 @@ namespace Compus.Caching
         {
             if (array is null) { throw new ArgumentNullException(nameof(array)); }
 
-            lock (_syncRoot)
+            Span<Cached<TItem>> span = GetDestinationSpan(array, arrayIndex);
+            Entry entry = _entries[_head];
+            for (var i = 0; i < _count; i++)
             {
-                Span<Cached<TItem>> span = GetDestinationSpan(array, arrayIndex);
-                Entry entry = _entries[_head];
-                for (var i = 0; i < _count; i++)
-                {
-                    span[i] = ItemFromEntry(entry);
-                    entry   = _entries[entry.Next];
-                }
+                span[i] = ItemFromEntry(entry);
+                entry   = _entries[entry.Next];
             }
         }
 
@@ -532,17 +491,14 @@ namespace Compus.Caching
         {
             if (array is null) { throw new ArgumentNullException(nameof(array)); }
 
-            lock (_syncRoot)
+            Span<KeyValuePair<TKey, Cached<TItem>>> span = GetDestinationSpan(array, arrayIndex);
+            Entry entry = _entries[_head];
+            for (var i = 0; i < _count; i++)
             {
-                Span<KeyValuePair<TKey, Cached<TItem>>> span = GetDestinationSpan(array, arrayIndex);
-                Entry entry = _entries[_head];
-                for (var i = 0; i < _count; i++)
-                {
-                    TKey key = _keySelector(entry.Item);
-                    Cached<TItem> value = ItemFromEntry(entry);
-                    span[i] = new KeyValuePair<TKey, Cached<TItem>>(key, value);
-                    entry   = _entries[entry.Next];
-                }
+                TKey key = _keySelector(entry.Item);
+                Cached<TItem> value = ItemFromEntry(entry);
+                span[i] = new KeyValuePair<TKey, Cached<TItem>>(key, value);
+                entry   = _entries[entry.Next];
             }
         }
 
@@ -578,31 +534,22 @@ namespace Compus.Caching
 
             public void Reset()
             {
-                lock (Cache._syncRoot)
-                {
-                    _position = Cache._entries[Cache._head].Prev;
-                }
+                _position = Cache._entries[Cache._head].Prev;
             }
 
             public bool MoveNext()
             {
-                lock (Cache._syncRoot)
-                {
-                    bool passedEnd = Cache._count == 0 || _position == Cache._tail;
-                    _position = Cache._entries[_position].Next;
-                    return !passedEnd;
-                }
+                bool passedEnd = Cache._count == 0 || _position == Cache._tail;
+                _position = Cache._entries[_position].Next;
+                return !passedEnd;
             }
 
             public T Current
             {
                 get
                 {
-                    lock (Cache._syncRoot)
-                    {
-                        Entry entry = Cache._entries[_position];
-                        return SelectFromEntry(entry);
-                    }
+                    Entry entry = Cache._entries[_position];
+                    return SelectFromEntry(entry);
                 }
             }
 
