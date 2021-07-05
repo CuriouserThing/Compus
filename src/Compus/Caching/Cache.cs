@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
-using Compus.Equality;
 
 namespace Compus.Caching
 {
@@ -37,7 +36,6 @@ namespace Compus.Caching
     internal class Cache<TKey, TItem> : Cache,
                                         ICollection<Cached<TItem>>,
                                         IDictionary<TKey, Cached<TItem>>
-        where TItem : IEquatablePart<TItem>
     {
         private readonly DateTimeOffset _epoch;
         private readonly IEqualityComparer<TKey> _keyComparer;
