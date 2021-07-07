@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.InteropServices;
 
 namespace Compus.Caching
 {
@@ -31,89 +30,123 @@ namespace Compus.Caching
     ///             <description>Removing an item</description>
     ///         </item>
     ///     </list>
-    ///     Each item requires between 20 and 24 bytes of memory, in addition to the size of <see cref="TItem" /> itself.
+    ///     Each item requires between 20 and 24 bytes of memory, in addition to the sizes of <see cref="TKey" /> and
+    ///     <see cref="TItem" /> themselves.
     /// </remarks>
-    internal class Cache<TKey, TItem> : Cache,
-                                        ICollection<Cached<TItem>>,
-                                        IDictionary<TKey, Cached<TItem>>
+    internal class Cache<TKey, TItem> : Cache, IDictionary<TKey, Cached<TItem>>
     {
+        private const int DefaultInitialCapacity = 16;
+        private const float GrowthFactor = 2.0f;
+
         private readonly DateTimeOffset _epoch;
+        private readonly IEvictionPolicy _evictionPolicy;
         private readonly IEqualityComparer<TKey> _keyComparer;
-        private readonly Func<TItem, TKey> _keySelector;
 
         private int[] _bucketHeads;
         private int _count;
         private Entry[] _entries;
-        private int _head;
+        private TItem[] _items;
+        private TKey[] _keys;
         private int _tail;
 
-        public Cache(Func<TItem, TKey>       keySelector,
-                     IEqualityComparer<TKey> keyComparer,
-                     int                     capacity)
+        public Cache(IEqualityComparer<TKey> keyComparer, IEvictionPolicy evictionPolicy, int? initialCapacity = null)
         {
             // Cache timestamps are only precise to the second, so truncate the epoch to the last second.
             DateTimeOffset now = DateTimeOffset.Now;
             long ticks = now.Ticks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond;
             _epoch = new DateTimeOffset(ticks, now.Offset);
 
-            _keySelector = keySelector;
-            _keyComparer = keyComparer;
-            InitArrays(capacity, out _bucketHeads, out _entries);
-            _count = 0;
-            ResetHeadAndTail();
+            _keyComparer    = keyComparer;
+            _evictionPolicy = evictionPolicy;
+            int capacity = initialCapacity ?? DefaultInitialCapacity;
+            InitArrays(capacity, out _bucketHeads, out _keys, out _items, out _entries);
         }
 
-        public int Capacity => _entries.Length;
+        public int Capacity => _entries.Length - 2;
 
-        private static void InitArrays(int cacheSize, out int[] bucketHeads, out Entry[] entries)
+        private static void InitArrays(int         capacity,
+                                       out int[]   bucketHeads,
+                                       out TKey[]  keys,
+                                       out TItem[] items,
+                                       out Entry[] entries)
         {
             // Trying to test caches with capacity under 3 is a headache, so...don't!
-            cacheSize = Math.Max(3, cacheSize);
+            capacity = Math.Max(3, capacity);
 
-            int bucketCount = CalculateBucketCount(cacheSize);
+            int bucketCount = CalculateBucketCount(capacity);
             bucketHeads = new int[bucketCount];
-            entries     = new Entry[cacheSize];
+            keys        = new TKey[capacity  + 1];
+            items       = new TItem[capacity + 1];
+            entries     = new Entry[capacity + 2];
 
-            Array.Fill(bucketHeads, -1);
-
-            int length = entries.Length;
-            for (var i = 0; i < length; i++)
+            for (var i = 0; i < entries.Length; i++)
             {
                 entries[i] = new Entry
                 {
-                    Prev       = i - 1,
-                    Next       = i + 1,
-                    Item       = default(TItem)!,
-                    BucketNext = -1,
-                    Timestamp  = 0,
+                    Prev = i - 1,
+                    Next = i + 1,
                 };
             }
-
-            // Tie the queue into a loop
-            entries[0].Prev          = length - 1;
-            entries[length - 1].Next = 0;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+        private void Grow(int capacity)
+        {
+            Rehash(capacity);
+            int start = _entries.Length;
+
+            var newKeys = new TKey[capacity     + 1];
+            var newItems = new TItem[capacity   + 1];
+            var newEntries = new Entry[capacity + 2];
+
+            Array.Copy(_keys,    newKeys,    _keys.Length);
+            Array.Copy(_items,   newItems,   _items.Length);
+            Array.Copy(_entries, newEntries, _entries.Length);
+
+            _keys    = newKeys;
+            _items   = newItems;
+            _entries = newEntries;
+
+            for (int i = start; i < newEntries.Length; i++)
+            {
+                newEntries[i] = new Entry
+                {
+                    Prev = i - 1,
+                    Next = i + 1,
+                };
+            }
+        }
+
+        private void Rehash(int capacity)
+        {
+            int bucketCount = CalculateBucketCount(capacity);
+            _bucketHeads = new int[bucketCount];
+
+            var index = 0;
+            while (index != _tail)
+            {
+                index = _entries[index].Next;
+                TKey key = _keys[index];
+                int hash = _keyComparer.GetHashCode(key!);
+                int bucketIndex = (hash & int.MaxValue) % bucketCount;
+                ref int link = ref _bucketHeads[bucketIndex];
+                while (link != 0)
+                {
+                    link = ref _entries[link].BucketNext;
+                }
+
+                link = index;
+            }
+        }
+
         private struct Entry
         {
-            /// <summary>default(TItem) while the entry is unused.</summary>
-            public TItem Item;
-
-            // We designed this to pack tightly into an array.
-            // If TItem is a reference type, Entry will never have padding (assuming x86 or x64).
-            // If TItem is a value type, Entry will only have padding if TItem's size is less than 4.
-            // Since TItem requires an embedded key, that last case isn't likely.
-            // But of course we have no control over what *actually* happens in managed .NET :v
-            // Just don't go sticking Entry's Item field in-between the int fields or the compiler will get funny ideas :3c
-
             /// <summary>Always points to prev node in queue, even while unused.</summary>
             public int Prev;
 
             /// <summary>Always points to next node in queue, even while unused.</summary>
             public int Next;
 
-            /// <summary>-1 while the entry is unused.</summary>
+            /// <summary>0 while the entry is unused.</summary>
             public int BucketNext;
 
             /// <summary>
@@ -128,41 +161,11 @@ namespace Compus.Caching
         // ReSharper disable once ConvertToAutoPropertyWithPrivateSetter
         public int Count => _count;
 
-        public IEnumerator<Cached<TItem>> GetEnumerator()
-        {
-            return new CachedItemEnumerator(this);
-        }
-
-        public void Add(Cached<TItem> value)
-        {
-            TKey key = _keySelector(value.Item);
-            ref int link = ref GetIndex(key);
-            if (link > -1)
-            {
-                throw new ArgumentException($"The key {key} embedded in the value {value} already exists in this cache.", nameof(value));
-            }
-
-            Add(ref link, value);
-        }
-
-        public bool Remove(Cached<TItem> value)
-        {
-            TKey key = _keySelector(value.Item);
-            ref int link = ref GetIndex(key);
-            if (link < 0 || !ItemFromEntry(_entries[link]).Equals(value))
-            {
-                return false;
-            }
-
-            Remove(ref link);
-            return true;
-        }
-
         public void Clear()
         {
-            InitArrays(Capacity, out _bucketHeads, out _entries);
+            InitArrays(Capacity, out _bucketHeads, out _keys, out _items, out _entries);
             _count = 0;
-            ResetHeadAndTail();
+            _tail  = 0;
         }
 
         public Cached<TItem> this[TKey key]
@@ -182,14 +185,14 @@ namespace Compus.Caching
             {
                 if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
-                ref int link = ref GetIndex(key, value.Item);
-                Add(ref link, value);
+                ref int link = ref GetIndex(key);
+                Add(ref link, key, value);
             }
         }
 
         public bool ContainsKey(TKey key)
         {
-            return GetIndex(key) > -1;
+            return GetIndex(key) != 0;
         }
 
         public bool TryGetValue(TKey key, [NotNullWhen(true)] out Cached<TItem> item)
@@ -197,9 +200,9 @@ namespace Compus.Caching
             if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
             int index = GetIndex(key);
-            if (index > -1)
+            if (index != 0)
             {
-                item = ItemFromEntry(_entries[index]);
+                item = ValueFromIndex(index);
                 return true;
             }
             else
@@ -213,13 +216,13 @@ namespace Compus.Caching
         {
             if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
-            ref int link = ref GetIndex(key, value.Item);
-            if (link > -1)
+            ref int link = ref GetIndex(key);
+            if (link != 0)
             {
                 throw new ArgumentException($"The key {key} already exists in this cache.", nameof(key));
             }
 
-            Add(ref link, value);
+            Add(ref link, key, value);
         }
 
         public bool Remove(TKey key)
@@ -227,7 +230,7 @@ namespace Compus.Caching
             if (key is null) { throw new ArgumentNullException(nameof(key)); }
 
             ref int link = ref GetIndex(key);
-            if (link < 0) { return false; }
+            if (link == 0) { return false; }
 
             Remove(ref link);
             return true;
@@ -238,11 +241,11 @@ namespace Compus.Caching
             get
             {
                 var keys = new TKey[_count];
-                Entry entry = _entries[_head];
+                int index = _entries[0].Next;
                 for (var i = 0; i < _count; i++)
                 {
-                    keys[i] = _keySelector(entry.Item);
-                    entry   = _entries[entry.Next];
+                    keys[i] = _keys[index];
+                    index   = _entries[index].Next;
                 }
 
                 return keys;
@@ -254,11 +257,11 @@ namespace Compus.Caching
             get
             {
                 var values = new Cached<TItem>[_count];
-                Entry entry = _entries[_head];
+                int index = _entries[0].Next;
                 for (var i = 0; i < _count; i++)
                 {
-                    values[i] = ItemFromEntry(entry);
-                    entry     = _entries[entry.Next];
+                    values[i] = ValueFromIndex(index);
+                    index     = _entries[index].Next;
                 }
 
                 return values;
@@ -269,88 +272,75 @@ namespace Compus.Caching
 
         #region Heavy lifting
 
-        private ref int GetIndex(TKey key, TItem item)
-        {
-            if (_keyComparer.Equals(key, _keySelector(item)))
-            {
-                return ref GetIndex(key);
-            }
-            else
-            {
-                throw new ArgumentException($"The given key {key} does not match the key embedded in the given item {item}.", nameof(item));
-            }
-        }
-
         private ref int GetIndex(TKey key)
         {
             int hash = _keyComparer.GetHashCode(key!);
             int bucketIndex = (hash & int.MaxValue) % _bucketHeads.Length;
-            ref int index = ref _bucketHeads[bucketIndex];
-            while (index != -1)
+            ref int link = ref _bucketHeads[bucketIndex];
+            while (link != 0)
             {
-                TKey cacheKey = _keySelector(_entries[index].Item);
+                TKey cacheKey = _keys[link];
                 if (_keyComparer.Equals(key, cacheKey))
                 {
-                    return ref index;
+                    return ref link;
                 }
 
-                index = ref _entries[index].BucketNext;
+                link = ref _entries[link].BucketNext;
             }
 
-            return ref index;
+            return ref link;
         }
 
-        private void Add(ref int link, Cached<TItem> value)
+        private void Add(ref int link, TKey key, Cached<TItem> value)
         {
-            if (link < 0)
+            if (link == 0)
             {
-                // This is a new key, so we need to requisition the entry after the queue tail.
-                // If we're at capacity, this means evicting the oldest item. Advance the head to the second-oldest item and we'll overwrite the old item's values below.
-                // Otherwise, no eviction is necessary so we'll just increment the count.
-                if (_count == _entries.Length)
+                if (_count == Capacity)
                 {
-                    _head = _entries[_head].Next;
-                }
-                else
-                {
-                    _count++;
+                    int oldest = _entries[0].Next;
+                    TimeSpan lifespan = DateTimeOffset.Now - ConvertTimestamp(_entries[oldest].Timestamp);
+                    if (_evictionPolicy.CanEvictOldest(lifespan, _count))
+                    {
+                        TKey oldestKey = _keys[oldest];
+                        ref int oldestLink = ref GetIndex(oldestKey);
+                        Remove(ref oldestLink);
+                    }
+                    else
+                    {
+                        Grow((int)(_count * GrowthFactor));
+                    }
                 }
 
-                // Link our requisitioned entry to the previous bucket list node...
+                _count++;
                 link = _entries[_tail].Next;
-
-                // ...then terminate the bucket list at this entry.
-                _entries[link].BucketNext = -1;
             }
 
             int index = link;
             int timestamp = ConvertTimestamp(value.Timestamp);
-            _entries[index].Item      = value.Item;
+            _keys[index]              = key;
+            _items[index]             = value.Item;
             _entries[index].Timestamp = timestamp;
 
-            if (_count == 1)
+            if (_tail == index)
             {
-                _head = index;
-                _tail = index;
+                _tail = _entries[index].Prev;
             }
-            else
+
+            RemoveEntryFromQueue(index);
+            int p = _tail;
+            int n = _entries[p].Next;
+
+            // If timestamps are in agreement with insertion order, this will always be false and we'll always insert items at the end of the queue.
+            while (p != 0 && timestamp < _entries[p].Timestamp)
             {
-                RemoveEntryFromQueueLoop(index);
+                n = p;
+                p = _entries[p].Prev;
+            }
 
-                int p = _tail;
-                int n = _entries[p].Next;
-
-                // If timestamps are in agreement with insertion order, this will always be false and we'll always insert items at the end of the queue.
-                while (timestamp < _entries[p].Timestamp && n != _head)
-                {
-                    n = p;
-                    p = _entries[p].Prev;
-                }
-
-                if (p      == _tail) { _tail = index; }
-                else if (n == _head) { _head = index; }
-
-                InsertEntryIntoQueueLoop(index, p, n);
+            InsertEntryIntoQueue(index, p, n);
+            if (_tail == p)
+            {
+                _tail = index;
             }
         }
 
@@ -359,51 +349,40 @@ namespace Compus.Caching
             int index = link;
 
             _count--;
-            if (_count == 0)
+            if (_tail == index)
             {
-                ResetHeadAndTail();
+                _tail = _entries[index].Prev;
             }
             else
             {
-                RemoveEntryFromQueueLoop(index);
-                InsertEntryIntoQueueLoop(index, _entries[_head].Prev, _head);
+                RemoveEntryFromQueue(index);
+                InsertEntryIntoQueue(index, _tail, _entries[_tail].Next);
             }
 
             // Remove linked entry from its bucket list, re-linking the list together (or "deleting" the list).
             link = _entries[index].BucketNext;
 
-            // Clean the remaining entry fields.
-            _entries[index].Item       = default(TItem)!;
-            _entries[index].BucketNext = -1;
-            _entries[index].Timestamp  = 0;
+            // Clean the remaining fields.
+            _keys[index]               = default(TKey)!;
+            _items[index]              = default(TItem)!;
+            _entries[index].BucketNext = default(int);
+            _entries[index].Timestamp  = default(int);
         }
 
-        private void RemoveEntryFromQueueLoop(int index)
+        private void RemoveEntryFromQueue(int index)
         {
             int prev = _entries[index].Prev;
             int next = _entries[index].Next;
-
-            // Bump the head or tail if needed.
-            if (index      == _head) { _head = next; }
-            else if (index == _tail) { _tail = prev; }
-
-            // Remove entry from its current queue position, re-linking the queue together.
             _entries[prev].Next = next;
             _entries[next].Prev = prev;
         }
 
-        private void InsertEntryIntoQueueLoop(int index, int prev, int next)
+        private void InsertEntryIntoQueue(int index, int prev, int next)
         {
             _entries[index].Prev = prev;
             _entries[index].Next = next;
             _entries[prev].Next  = index;
             _entries[next].Prev  = index;
-        }
-
-        private void ResetHeadAndTail()
-        {
-            _head = 0;
-            _tail = _entries[_head].Prev;
         }
 
         #endregion
@@ -420,9 +399,10 @@ namespace Compus.Caching
             return (int)(timestamp - _epoch).TotalSeconds;
         }
 
-        private Cached<TItem> ItemFromEntry(Entry entry)
+        private Cached<TItem> ValueFromIndex(int index)
         {
-            return new(entry.Item, ConvertTimestamp(entry.Timestamp));
+            DateTimeOffset timestamp = ConvertTimestamp(_entries[index].Timestamp);
+            return new Cached<TItem>(_items[index], timestamp);
         }
 
         #endregion
@@ -434,13 +414,6 @@ namespace Compus.Caching
             (TKey key, Cached<TItem> otherValue) = kvp;
             return TryGetValue(key, out Cached<TItem> thisValue) &&
                    thisValue.Equals(otherValue);
-        }
-
-        bool ICollection<Cached<TItem>>.Contains(Cached<TItem> value)
-        {
-            TKey key = _keySelector(value.Item);
-            return TryGetValue(key, out Cached<TItem> thisValue) &&
-                   thisValue.Equals(value);
         }
 
         bool ICollection<KeyValuePair<TKey, Cached<TItem>>>.Contains(KeyValuePair<TKey, Cached<TItem>> kvp)
@@ -474,35 +447,21 @@ namespace Compus.Caching
             return new Span<T>(array, arrayIndex, _count);
         }
 
-        void ICollection<Cached<TItem>>.CopyTo(Cached<TItem>[] array, int arrayIndex)
-        {
-            if (array is null) { throw new ArgumentNullException(nameof(array)); }
-
-            Span<Cached<TItem>> span = GetDestinationSpan(array, arrayIndex);
-            Entry entry = _entries[_head];
-            for (var i = 0; i < _count; i++)
-            {
-                span[i] = ItemFromEntry(entry);
-                entry   = _entries[entry.Next];
-            }
-        }
-
         void ICollection<KeyValuePair<TKey, Cached<TItem>>>.CopyTo(KeyValuePair<TKey, Cached<TItem>>[] array, int arrayIndex)
         {
             if (array is null) { throw new ArgumentNullException(nameof(array)); }
 
             Span<KeyValuePair<TKey, Cached<TItem>>> span = GetDestinationSpan(array, arrayIndex);
-            Entry entry = _entries[_head];
+            Entry entry = _entries[_entries[0].Next];
+            int index = _entries[0].Next;
             for (var i = 0; i < _count; i++)
             {
-                TKey key = _keySelector(entry.Item);
-                Cached<TItem> value = ItemFromEntry(entry);
+                TKey key = _keys[index];
+                Cached<TItem> value = ValueFromIndex(index);
                 span[i] = new KeyValuePair<TKey, Cached<TItem>>(key, value);
-                entry   = _entries[entry.Next];
+                index   = entry.Next;
             }
         }
-
-        bool ICollection<Cached<TItem>>.IsReadOnly => false;
 
         bool ICollection<KeyValuePair<TKey, Cached<TItem>>>.IsReadOnly => false;
 
@@ -517,60 +476,42 @@ namespace Compus.Caching
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            return GetEnumerator();
+            return new KeyValuePairEnumerator(this);
         }
 
         private abstract class Enumerator<T> : IEnumerator<T> where T : notnull
         {
-            protected readonly Cache<TKey, TItem> Cache;
-
-            private int _position;
+            private bool _passedEnd;
 
             protected Enumerator(Cache<TKey, TItem> cache)
             {
                 Cache = cache;
-                Reset();
             }
+
+            protected Cache<TKey, TItem> Cache { get; }
+
+            protected int Position { get; private set; }
 
             public void Reset()
             {
-                _position = Cache._entries[Cache._head].Prev;
+                Position = 0;
             }
 
             public bool MoveNext()
             {
-                bool passedEnd = Cache._count == 0 || _position == Cache._tail;
-                _position = Cache._entries[_position].Next;
-                return !passedEnd;
+                if (_passedEnd) { return false; }
+
+                _passedEnd = Position == Cache._tail;
+                Position   = Cache._entries[Position].Next;
+                return !_passedEnd;
             }
 
-            public T Current
-            {
-                get
-                {
-                    Entry entry = Cache._entries[_position];
-                    return SelectFromEntry(entry);
-                }
-            }
+            public abstract T Current { get; }
 
             object IEnumerator.Current => Current;
 
             public void Dispose()
             {
-            }
-
-            protected abstract T SelectFromEntry(Entry entry);
-        }
-
-        private class CachedItemEnumerator : Enumerator<Cached<TItem>>
-        {
-            public CachedItemEnumerator(Cache<TKey, TItem> cache) : base(cache)
-            {
-            }
-
-            protected override Cached<TItem> SelectFromEntry(Entry entry)
-            {
-                return Cache.ItemFromEntry(entry);
             }
         }
 
@@ -580,11 +521,14 @@ namespace Compus.Caching
             {
             }
 
-            protected override KeyValuePair<TKey, Cached<TItem>> SelectFromEntry(Entry entry)
+            public override KeyValuePair<TKey, Cached<TItem>> Current
             {
-                TKey key = Cache._keySelector(entry.Item);
-                Cached<TItem> value = Cache.ItemFromEntry(entry);
-                return new KeyValuePair<TKey, Cached<TItem>>(key, value);
+                get
+                {
+                    TKey key = Cache._keys[Position];
+                    Cached<TItem> value = Cache.ValueFromIndex(Position);
+                    return new KeyValuePair<TKey, Cached<TItem>>(key, value);
+                }
             }
         }
 
