@@ -1,7 +1,7 @@
 using System;
 using Compus.Equality;
 
-namespace Compus.Resources
+namespace Compus
 {
     public readonly struct Snowflake : IEquatable<Snowflake>
     {
@@ -44,6 +44,7 @@ namespace Compus.Resources
 
         public override string ToString()
         {
+            // Some methods may rely on this returning the raw numerical value for simplicity. Do not change.
             return _value.ToString();
         }
 
