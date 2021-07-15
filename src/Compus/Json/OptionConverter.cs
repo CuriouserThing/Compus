@@ -27,7 +27,7 @@ namespace Compus.Json
 
         public override void Write(Utf8JsonWriter writer, Option<T> value, JsonSerializerOptions options)
         {
-            if (value.IsSome(out T item))
+            if (value.IsSome(out T? item))
             {
                 _valueConverter.Write(writer, item, options);
             }
