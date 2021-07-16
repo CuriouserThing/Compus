@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Compus.Models
 {
     /// <summary>
@@ -5,12 +7,16 @@ namespace Compus.Models
     /// </summary>
     public record EmbedThumbnail
     {
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<string> Url { get; init; }
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<string> ProxyUrl { get; init; }
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<int> Height { get; init; }
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<int> Width { get; init; }
     }
 }

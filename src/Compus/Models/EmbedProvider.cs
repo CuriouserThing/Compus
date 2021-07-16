@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Compus.Models
 {
     /// <summary>
@@ -5,8 +7,10 @@ namespace Compus.Models
     /// </summary>
     public record EmbedProvider
     {
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<string> Name { get; init; }
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<string> Url { get; init; }
     }
 }

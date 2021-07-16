@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Compus.Models
 {
     /// <summary>
@@ -9,6 +11,7 @@ namespace Compus.Models
 
         public string Value { get; init; }
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<bool> Inline { get; init; }
     }
 }

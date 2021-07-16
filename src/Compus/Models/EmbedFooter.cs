@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Compus.Models
 {
     /// <summary>
@@ -7,8 +9,10 @@ namespace Compus.Models
     {
         public string Text { get; init; }
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<string> IconUrl { get; init; }
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public Option<string> ProxyIconUrl { get; init; }
     }
 }
