@@ -11,6 +11,7 @@ namespace Compus.Json
             new ShardConverter(),
             new OptionConverterFactory(true),
             new OptionConverterFactory(false),
+            new DataErrorsConverter(),
         };
 
         public static JsonSerializerOptions SerializerOptions { get; } = CreateSerializerOptions();

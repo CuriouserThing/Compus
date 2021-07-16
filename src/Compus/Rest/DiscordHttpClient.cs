@@ -100,37 +100,45 @@ namespace Compus.Rest
 
                 RateLimitHeaders headers = GetRateLimitHeaders(response, rateLimitContent);
                 CacheRetryTime(request, status, headers);
-                LogRequestResponse(request, status, headers);
 
                 if (response.IsSuccessStatusCode)
                 {
+                    LogRequestResponse(request, status, headers);
                     return response;
                 }
                 else if (status == HttpStatusCode.TooManyRequests)
                 {
+                    LogRequestResponse(request, status, headers);
                     response.Dispose();
                 }
                 else
                 {
-                    ErrorContent ec;
+                    ErrorContent? ec = null;
                     try
                     {
                         await using Stream responseContent = await response.Content.ReadAsStreamAsync(cancellationToken);
-                        ec = await JsonSerializer.DeserializeAsync<ErrorContent>(responseContent, JsonOptions.SerializerOptions, cancellationToken)
-                             ?? throw new JsonException();
+                        ec = await JsonSerializer.DeserializeAsync<ErrorContent>(responseContent, JsonOptions.SerializerOptions, cancellationToken);
                     }
                     catch (JsonException ex)
                     {
                         _logger.LogWarning($"Discord returned the HTTP code {status}, but we couldn't deserialize error content from the response.", ex);
-                        throw new DiscordApiException("Unknown Discord API error encountered.", status, ex);
                     }
 
+                    LogRequestResponse(request, status, headers, ec);
                     response.Dispose();
-                    throw new DiscordApiException(ec.Message, status)
+
+                    if (ec is null)
                     {
-                        Code   = ec.Code,
-                        Errors = ec.Errors,
-                    };
+                        throw new DiscordApiException("Unknown Discord API error encountered.", status);
+                    }
+                    else
+                    {
+                        throw new DiscordApiException(ec.Message, status)
+                        {
+                            Code   = ec.Code,
+                            Errors = ec.Errors,
+                        };
+                    }
                 }
             }
         }
@@ -383,7 +391,7 @@ namespace Compus.Rest
             }
         }
 
-        private void LogRequestResponse(DiscordHttpRequest request, HttpStatusCode status, RateLimitHeaders headers)
+        private void LogRequestResponse(DiscordHttpRequest request, HttpStatusCode status, RateLimitHeaders headers, ErrorContent? errorContent = null)
         {
             StringBuilder log = new();
             HttpMethod method = request.Method;
@@ -435,9 +443,23 @@ namespace Compus.Rest
 
                     log.Append('.');
                 }
+
+                if (errorContent is not null)
+                {
+                    if (errorContent.Errors.IsSome(out IReadOnlyList<DataError>? errors))
+                    {
+                        string errs = string.Join(" ", errors.Select(e => $"Error {e.Code} in {e.Path}: {e.Message}"));
+                        log.Append($" {errs}");
+                    }
+                    else
+                    {
+                        log.Append($" Error {errorContent.Code}: {errorContent.Message}.");
+                    }
+                }
             }
 
-            _logger.LogDebug(log.ToString());
+            LogLevel level = errorContent is null ? LogLevel.Debug : LogLevel.Warning;
+            _logger.Log(level, log.ToString());
         }
 
         private readonly struct RateLimit

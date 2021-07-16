@@ -1,4 +1,4 @@
-using System.Text.Json;
+using System.Collections.Generic;
 
 namespace Compus.Rest
 {
@@ -12,7 +12,7 @@ namespace Compus.Rest
         /// <summary>
         ///     https://discord.com/developers/docs/reference#error-messages
         /// </summary>
-        public Option<JsonElement> Errors { get; init; }
+        public Option<IReadOnlyList<DataError>> Errors { get; init; }
 
         public string Message { get; init; }
     }
