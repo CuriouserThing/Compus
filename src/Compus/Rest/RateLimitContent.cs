@@ -1,6 +1,6 @@
 namespace Compus.Rest
 {
-    internal class RateLimitContent
+    internal record RateLimitContent
     {
         public Option<string> Message { get; init; }
 

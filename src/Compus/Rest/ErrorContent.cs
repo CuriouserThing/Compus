@@ -5,7 +5,7 @@ namespace Compus.Rest
     /// <summary>
     ///     https://discord.com/developers/docs/topics/opcodes-and-status-codes#json
     /// </summary>
-    internal class ErrorContent
+    internal record ErrorContent
     {
         public ErrorCode Code { get; init; }
 
@@ -14,6 +14,6 @@ namespace Compus.Rest
         /// </summary>
         public Option<JsonElement> Errors { get; init; }
 
-        public string Message { get; init; } = null!;
+        public string Message { get; init; }
     }
 }
