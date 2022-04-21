@@ -24,6 +24,6 @@ namespace Compus.Models
 
         public Option<bool> Pending { get; init; }
 
-        public Option<string> Permissions { get; init; }
+        public Option<PermissionSet> Permissions { get; init; }
     }
 }

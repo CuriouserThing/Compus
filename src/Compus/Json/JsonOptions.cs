@@ -9,6 +9,7 @@ internal static class JsonOptions
     {
         new SnowflakeConverter(),
         new ShardConverter(),
+        new PermissionSetConverter(),
         new ColorConverter(),
         new OptionConverterFactory(true),
         new OptionConverterFactory(false),
