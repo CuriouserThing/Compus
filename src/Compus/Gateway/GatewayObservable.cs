@@ -47,14 +47,7 @@ namespace Compus.Gateway
             {
                 foreach (var observer in _observers)
                 {
-                    try
-                    {
-                        observer.OnNext(data);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError("Exception encountered in observer callback.", ex);
-                    }
+                    observer.OnNext(data);
                 }
             }
         }
