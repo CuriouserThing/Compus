@@ -2,26 +2,40 @@ using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using Compus.Models;
 
-namespace Compus.Rest.Data
+namespace Compus.Rest.Data;
+
+public record MessageData
 {
-    public record MessageData
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public Option<string> Content { get; init; } = null!;
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public Option<bool> Tts { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public Option<IReadOnlyList<Embed>> Embeds { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public Option<AllowedMentions> AllowedMentions { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public Option<MessageReference> MessageReference { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public Option<IReadOnlyList<Component>> Components { get; init; }
+
+    public static implicit operator MessageData(string content)
     {
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-        public Option<string> Content { get; init; } = null!;
+        return new MessageData { Content = content };
+    }
 
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-        public Option<bool> Tts { get; init; }
+    public static implicit operator MessageData(Embed embed)
+    {
+        return new MessageData { Embeds = new[] { embed } };
+    }
 
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-        public Option<IReadOnlyList<Embed>> Embeds { get; init; }
-
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-        public Option<AllowedMentions> AllowedMentions { get; init; }
-
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-        public Option<MessageReference> MessageReference { get; init; }
-
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-        public Option<IReadOnlyList<Component>> Components { get; init; }
+    public static implicit operator MessageData(Component component)
+    {
+        return new MessageData { Components = new[] { component } };
     }
 }
