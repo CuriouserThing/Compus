@@ -14,10 +14,10 @@ namespace Compus.Rest
 {
     public class HttpRestClient : IRestClient
     {
-        private readonly DiscordHttpClient _client;
+        private readonly IDiscordHttpClient _client;
         private readonly ILogger _logger;
 
-        public HttpRestClient(DiscordHttpClient client, ILogger logger)
+        public HttpRestClient(IDiscordHttpClient client, ILogger<HttpRestClient> logger)
         {
             _client = client;
             _logger = logger;
@@ -176,6 +176,28 @@ namespace Compus.Rest
 
         #endregion
 
+        #region Guilds
+
+        public async Task<Guild> GetGuild(Snowflake guildId, CancellationToken cancellationToken)
+        {
+            return await Request<Guild>(
+                HttpMethod.Get, "/guilds/{0}",
+                cancellationToken,
+                new ResourceScope { Guild = guildId },
+                guildId);
+        }
+
+        public async Task<GuildMember> GetGuildMember(Snowflake guildId, Snowflake userId, CancellationToken cancellationToken)
+        {
+            return await Request<GuildMember>(
+                HttpMethod.Get, "/guilds/{0}/members/{1}",
+                cancellationToken,
+                new ResourceScope { Guild = guildId, User = userId },
+                guildId, userId);
+        }
+
+        #endregion
+
         #region Interactions
 
         public async Task CreateInteractionResponse(Snowflake interactionId, string interactionToken, InteractionResponse response, CancellationToken cancellationToken)
@@ -205,6 +227,13 @@ namespace Compus.Rest
                 cancellationToken,
                 new ResourceScope { User = id },
                 id);
+        }
+
+        public async Task<Channel> CreateDm(CreateDmData data, CancellationToken cancellationToken)
+        {
+            return await Request<CreateDmData, Channel>(
+                HttpMethod.Post, "/users/@me/channels", data,
+                cancellationToken);
         }
 
         #endregion

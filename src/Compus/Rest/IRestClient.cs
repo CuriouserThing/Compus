@@ -36,6 +36,14 @@ namespace Compus.Rest
 
         #endregion
 
+        #region Guilds
+
+        Task<Guild> GetGuild(Snowflake guildId, CancellationToken cancellationToken);
+
+        Task<GuildMember> GetGuildMember(Snowflake guildId, Snowflake userId, CancellationToken cancellationToken);
+
+        #endregion
+
         #region Interactions
 
         Task CreateInteractionResponse(Snowflake interactionId, string interactionToken, InteractionResponse response, CancellationToken cancellationToken);
@@ -47,6 +55,8 @@ namespace Compus.Rest
         Task<User> GetCurrentUser(CancellationToken cancellationToken);
 
         Task<User> GetUser(Snowflake id, CancellationToken cancellationToken);
+
+        Task<Channel> CreateDm(CreateDmData data, CancellationToken cancellationToken);
 
         #endregion
     }
