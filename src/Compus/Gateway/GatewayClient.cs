@@ -37,7 +37,7 @@ namespace Compus.Gateway
         private Session _session;
         private string? _sessionId;
 
-        public GatewayClient(Identity identity, IRestClient restClient, ILogger logger)
+        public GatewayClient(Identity identity, IRestClient restClient, ILogger<GatewayClient> logger)
         {
             _identity   = identity;
             _restClient = restClient;
@@ -115,7 +115,7 @@ namespace Compus.Gateway
             finally { _sessionBaton.Release(); }
         }
 
-        public async Task RunAsync()
+        public async Task Run()
         {
             if (_isDisposed) { throw new ObjectDisposedException(nameof(GatewayClient)); }
 
