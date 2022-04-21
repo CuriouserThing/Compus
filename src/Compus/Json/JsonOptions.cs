@@ -1,35 +1,35 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Compus.Json
+namespace Compus.Json;
+
+internal static class JsonOptions
 {
-    internal static class JsonOptions
+    private static readonly JsonConverter[] Converters =
     {
-        private static readonly JsonConverter[] Converters =
+        new SnowflakeConverter(),
+        new ShardConverter(),
+        new ColorConverter(),
+        new OptionConverterFactory(true),
+        new OptionConverterFactory(false),
+        new DataErrorsConverter(),
+    };
+
+    public static JsonSerializerOptions SerializerOptions { get; } = CreateSerializerOptions();
+
+    private static JsonSerializerOptions CreateSerializerOptions()
+    {
+        JsonSerializerOptions options = new()
         {
-            new SnowflakeConverter(),
-            new ShardConverter(),
-            new OptionConverterFactory(true),
-            new OptionConverterFactory(false),
-            new DataErrorsConverter(),
+            NumberHandling = JsonNumberHandling.AllowReadingFromString,
+            PropertyNamingPolicy = new JsonSnakeCaseNamingPolicy(),
         };
 
-        public static JsonSerializerOptions SerializerOptions { get; } = CreateSerializerOptions();
-
-        private static JsonSerializerOptions CreateSerializerOptions()
+        foreach (JsonConverter converter in Converters)
         {
-            JsonSerializerOptions options = new()
-            {
-                NumberHandling       = JsonNumberHandling.AllowReadingFromString,
-                PropertyNamingPolicy = new JsonSnakeCaseNamingPolicy(),
-            };
-
-            foreach (var converter in Converters)
-            {
-                options.Converters.Add(converter);
-            }
-
-            return options;
+            options.Converters.Add(converter);
         }
+
+        return options;
     }
 }
