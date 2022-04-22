@@ -13,7 +13,7 @@ public record Emoji
     public string? Name { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    public Option<IReadOnlyList<Role>> Roles { get; init; }
+    public Option<IReadOnlyList<Snowflake>> Roles { get; init; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public Option<User> User { get; init; }
