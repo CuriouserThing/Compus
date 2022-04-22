@@ -1,28 +1,31 @@
 using System.Drawing;
 
-namespace Compus.Models
+namespace Compus.Models;
+
+/// <summary>
+///     https://discord.com/developers/docs/topics/permissions#role-object
+/// </summary>
+public record Role
 {
-    /// <summary>
-    ///     https://discord.com/developers/docs/topics/permissions#role-object
-    /// </summary>
-    public record Role
-    {
-        public Snowflake Id { get; init; }
+    public Snowflake Id { get; init; }
 
-        public string Name { get; init; }
+    public string Name { get; init; }
 
-        public Color Color { get; init; }
+    public Color Color { get; init; }
 
-        public bool Hoist { get; init; }
+    public bool Hoist { get; init; }
 
-        public int Position { get; init; }
+    public NullableOption<string> Icon { get; init; }
 
-        public string Permissions { get; init; }
+    public NullableOption<string> UnicodeEmoji { get; init; }
 
-        public bool Managed { get; init; }
+    public int Position { get; init; }
 
-        public bool Mentionable { get; init; }
+    public PermissionSet Permissions { get; init; }
 
-        public Option<RoleTags> Tags { get; init; }
-    }
+    public bool Managed { get; init; }
+
+    public bool Mentionable { get; init; }
+
+    public Option<RoleTags> Tags { get; init; }
 }
