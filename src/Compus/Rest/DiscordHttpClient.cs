@@ -54,15 +54,6 @@ public class DiscordHttpClient : IDiscordHttpClient
 
     public async Task<HttpResponseMessage> Send(DiscordHttpRequest request, CancellationToken cancellationToken)
     {
-        string path = request.GetPath();
-        var req = new HttpRequestMessage
-        {
-            Method = request.Method,
-            RequestUri = new Uri($"{Scheme}://{Host}{BasePath}{ApiVersion}{path}"),
-            Content = request.Content,
-        };
-        req.Headers.Authorization = new AuthenticationHeaderValue(AuthenticationScheme, _token);
-
         while (true)
         {
             long retry = GetRetry(request);
@@ -74,6 +65,14 @@ public class DiscordHttpClient : IDiscordHttpClient
                 continue;
             }
 
+            string path = request.GetPath();
+            var req = new HttpRequestMessage
+            {
+                Method = request.Method,
+                RequestUri = new Uri($"{Scheme}://{Host}{BasePath}{ApiVersion}{path}"),
+                Content = request.Content,
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue(AuthenticationScheme, _token);
             HttpResponseMessage response = await _client.SendAsync(req, cancellationToken);
             HttpStatusCode status = response.StatusCode;
 
@@ -104,6 +103,7 @@ public class DiscordHttpClient : IDiscordHttpClient
             {
                 LogRequestResponse(request, status, headers, rateLimitContent);
                 response.Dispose();
+                // continue;
             }
             else
             {
