@@ -30,7 +30,7 @@ public record Message
 
     public IReadOnlyList<User> Mentions { get; init; }
 
-    public IReadOnlyList<Role> MentionRoles { get; init; }
+    public IReadOnlyList<Snowflake> MentionRoles { get; init; }
 
     public Option<IReadOnlyList<ChannelMention>> MentionChannels { get; init; }
 
