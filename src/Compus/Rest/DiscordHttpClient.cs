@@ -23,6 +23,10 @@ public class DiscordHttpClient : IDiscordHttpClient
     private const int ApiVersion = 9;
     private const string AuthenticationScheme = "Bot";
 
+    // This is a soft limit (only balances memory usage and GC spikes) and a per-bucket limit.
+    // Ultimately, this number shouldn't matter too much.
+    private const int ResourceConcurrencyLimit = 100;
+
     // In general, keep buckets alive for a week.
     // Since interaction tokens are only valid for 15 minutes, keep their buckets alive for only an hour.
     private static readonly TimeSpan ChannelBucketLifespan = TimeSpan.FromDays(7);
@@ -30,18 +34,28 @@ public class DiscordHttpClient : IDiscordHttpClient
     private static readonly TimeSpan WebhookBucketLifespan = TimeSpan.FromDays(7);
     private static readonly TimeSpan InteractionBucketLifespan = TimeSpan.FromHours(1);
 
-    private readonly RetryCache<Snowflake> _channelCache = new(new LifespanEvictionPolicy(ChannelBucketLifespan));
-    private readonly RetryCache<Snowflake> _guildCache = new(new LifespanEvictionPolicy(GuildBucketLifespan));
-    private readonly RetryCache<Snowflake> _webhookCache = new(new LifespanEvictionPolicy(WebhookBucketLifespan));
-    private readonly RetryCache<string> _interactionCache = new(new LifespanEvictionPolicy(InteractionBucketLifespan));
-    private readonly RetryCache<Unit> _globalCache = new(new NoEvictionPolicy());
+    private readonly ResourceLimiter<Snowflake> _channelLimiter =
+        new(ResourceConcurrencyLimit, new LifespanEvictionPolicy(ChannelBucketLifespan));
 
+    private readonly ResourceLimiter<Snowflake> _guildLimiter =
+        new(ResourceConcurrencyLimit, new LifespanEvictionPolicy(GuildBucketLifespan));
+
+    private readonly ResourceLimiter<Snowflake> _webhookLimiter =
+        new(ResourceConcurrencyLimit, new LifespanEvictionPolicy(WebhookBucketLifespan));
+
+    private readonly ResourceLimiter<string> _interactionLimiter =
+        new(ResourceConcurrencyLimit, new LifespanEvictionPolicy(InteractionBucketLifespan));
+
+    private readonly ResourceLimiter<Unit> _globalLimiter =
+        new(ResourceConcurrencyLimit, new NoEvictionPolicy());
+
+    private readonly SemaphoreSlim _bucketlessRequestLock = new(1, 1);
     private readonly Dictionary<Endpoint, string> _endpointBuckets = new();
+    private readonly HttpClient _client = new();
+    private readonly string _token;
+    private readonly ILogger _logger;
     private readonly Stopwatch _stopwatch;
     private readonly DateTimeOffset _stopwatchEpoch;
-    private readonly HttpClient _client = new();
-    private readonly ILogger _logger;
-    private readonly string _token;
 
     public DiscordHttpClient(Token token, ILogger<DiscordHttpClient> logger)
     {
@@ -54,15 +68,107 @@ public class DiscordHttpClient : IDiscordHttpClient
 
     public async Task<HttpResponseMessage> Send(DiscordHttpRequest request, CancellationToken cancellationToken)
     {
+        var endpoint = new Endpoint(request.Method, request.Url);
+        string? bucket;
+        lock (_endpointBuckets)
+        {
+            _ = _endpointBuckets.TryGetValue(endpoint, out bucket);
+        }
+
+        // This layer of abstraction is mostly to gracefully allow buckets to populate at app start.
+        // If no bucket is found, wait for other bucketless requests to possibly update buckets, then try again.
+        if (bucket is null)
+        {
+            await _bucketlessRequestLock.WaitAsync(cancellationToken);
+            try
+            {
+                lock (_endpointBuckets)
+                {
+                    _ = _endpointBuckets.TryGetValue(endpoint, out bucket);
+                }
+
+                if (bucket is null)
+                {
+                    return await SendBucketed(request, string.Empty, cancellationToken);
+                }
+            }
+            finally
+            {
+                _bucketlessRequestLock.Release();
+            }
+        }
+
+        return await SendBucketed(request, bucket, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendBucketed(DiscordHttpRequest request, string bucket, CancellationToken cancellationToken)
+    {
+        async Task<Response> SendFunc<T>(ResourceLimiter<T> limiter, T scope)
+        {
+            using (await limiter.Lock(scope, bucket))
+            {
+                return await SendUnlimited(request, bucket, cancellationToken);
+            }
+        }
+
+        (HttpResponseMessage response, RateLimitHeaders limitHeaders, RateLimitContent? limitContent) =
+            await ScopedAction(request.Scope, SendFunc, SendFunc, SendFunc);
+        UpdateBuckets(request, limitHeaders);
+
+        HttpStatusCode status = response.StatusCode;
+        if (response.IsSuccessStatusCode)
+        {
+            LogRequestResponse(request, status, limitHeaders, limitContent);
+            return response;
+        }
+        else if (status == HttpStatusCode.TooManyRequests)
+        {
+            LogRequestResponse(request, status, limitHeaders, limitContent);
+            response.Dispose();
+            throw new DiscordApiException("Rate limit unhandled.", status);
+        }
+        else
+        {
+            ErrorContent? errorContent = null;
+            try
+            {
+                await using Stream responseContent = await response.Content.ReadAsStreamAsync(cancellationToken);
+                errorContent = await JsonSerializer.DeserializeAsync<ErrorContent>(responseContent, JsonOptions.SerializerOptions, cancellationToken);
+            }
+            catch (JsonException ex)
+            {
+                var statusNumber = (int)status;
+                _logger.LogWarning(ex, "Discord returned the HTTP code {statusNumber} {status}, but we couldn't deserialize error content from the response.",
+                                   statusNumber, status);
+            }
+
+            LogRequestResponse(request, status, limitHeaders, limitContent, errorContent);
+            response.Dispose();
+            if (errorContent is null)
+            {
+                throw new DiscordApiException("Unknown Discord API error encountered.", status);
+            }
+            else
+            {
+                throw new DiscordApiException(errorContent.Message, status)
+                {
+                    Code = errorContent.Code,
+                    Errors = errorContent.Errors,
+                };
+            }
+        }
+    }
+
+    private async Task<Response> SendUnlimited(DiscordHttpRequest request, string bucket, CancellationToken cancellationToken)
+    {
         while (true)
         {
-            long retry = GetRetry(request);
+            long retry = GetRetry(request, bucket);
             long now = _stopwatch.ElapsedTicks;
             long retryAfter = retry - now;
             if (retryAfter > 0)
             {
                 await Task.Delay(TimeSpan.FromTicks(retryAfter), cancellationToken);
-                continue;
             }
 
             string path = request.GetPath();
@@ -92,85 +198,32 @@ public class DiscordHttpClient : IDiscordHttpClient
             }
 
             SetRetry(request, headers, rateLimitContent);
-            UpdateBuckets(request, headers);
-
-            if (response.IsSuccessStatusCode)
-            {
-                LogRequestResponse(request, status, headers, rateLimitContent);
-                return response;
-            }
-            else if (status == HttpStatusCode.TooManyRequests)
+            if (status == HttpStatusCode.TooManyRequests)
             {
                 LogRequestResponse(request, status, headers, rateLimitContent);
                 response.Dispose();
-                // continue;
+                continue;
             }
-            else
-            {
-                ErrorContent? errorContent = null;
-                try
-                {
-                    await using Stream responseContent = await response.Content.ReadAsStreamAsync(cancellationToken);
-                    errorContent = await JsonSerializer.DeserializeAsync<ErrorContent>(responseContent, JsonOptions.SerializerOptions, cancellationToken);
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogWarning(ex, "Discord returned the HTTP code {status}, but we couldn't deserialize error content from the response.", status);
-                }
 
-                LogRequestResponse(request, status, headers, rateLimitContent, errorContent);
-                response.Dispose();
-
-                if (errorContent is null)
-                {
-                    throw new DiscordApiException("Unknown Discord API error encountered.", status);
-                }
-                else
-                {
-                    throw new DiscordApiException(errorContent.Message, status)
-                    {
-                        Code = errorContent.Code,
-                        Errors = errorContent.Errors,
-                    };
-                }
-            }
+            return new Response(response, headers, rateLimitContent);
         }
     }
 
-    private long GetRetry(DiscordHttpRequest request)
+    private long GetRetry(DiscordHttpRequest request, string bucket)
     {
-        var endpoint = new Endpoint(request.Method, request.Url);
-        string? bucket;
-        lock (_endpointBuckets)
+        long GetFunc<T>(ResourceLimiter<T> limiter, T scope)
         {
-            _ = _endpointBuckets.TryGetValue(endpoint, out bucket);
+            return limiter.GetRetry(scope, bucket);
         }
 
-        ResourceScope scope = request.Scope;
-        long scopedRetry = 0;
-        if (scope.Channel.IsSome(out Snowflake channel))
-        {
-            scopedRetry = _channelCache.GetRetry(channel, bucket);
-        }
-        else if (scope.InteractionToken.IsSome(out string? interactionToken))
-        {
-            scopedRetry = _interactionCache.GetRetry(interactionToken, bucket);
-        }
-        else if (scope.Webhook.IsSome(out Snowflake webhook))
-        {
-            scopedRetry = _webhookCache.GetRetry(webhook, bucket);
-        }
-        else if (scope.Guild.IsSome(out Snowflake guild))
-        {
-            scopedRetry = _guildCache.GetRetry(guild, bucket);
-        }
-
-        long globalRetry = _globalCache.GetRetry(Unit.Default, bucket);
+        long scopedRetry = ScopedAction(request.Scope, GetFunc, GetFunc, GetFunc);
+        long globalRetry = _globalLimiter.GetRetry(Unit.Default, bucket);
         return Math.Max(scopedRetry, globalRetry);
     }
 
     private void SetRetry(DiscordHttpRequest request, RateLimitHeaders headers, RateLimitContent? content)
     {
+        // First, determine the retry time.
         long now = _stopwatch.ElapsedTicks;
         long retry;
         if (content is not null && content.RetryAfter.IsSome(out float retryAfter))
@@ -193,65 +246,31 @@ public class DiscordHttpClient : IDiscordHttpClient
         }
         else { return; }
 
+        // Then, cache the retry time accordingly.
         if (headers.Global.IsSome(out bool global) && global)
         {
-            // Global rate limit on the user
-            _globalCache.SetRetry(Unit.Default, retry);
-        }
-        else if (headers.Scope.IsSome(out string? limitScope) && limitScope == "shared")
-        {
-            // Shared rate limit on the resource
-            ResourceScope scope = request.Scope;
-            if (scope.Channel.IsSome(out Snowflake channel))
-            {
-                _channelCache.SetRetry(channel, retry);
-            }
-            else if (scope.InteractionToken.IsSome(out string? interactionToken))
-            {
-                _interactionCache.SetRetry(interactionToken, retry);
-            }
-            else if (scope.Webhook.IsSome(out Snowflake webhook))
-            {
-                _webhookCache.SetRetry(webhook, retry);
-            }
-            else if (scope.Guild.IsSome(out Snowflake guild))
-            {
-                _guildCache.SetRetry(guild, retry);
-            }
-            else
-            {
-                _globalCache.SetRetry(Unit.Default, retry);
-            }
+            _globalLimiter.SetRetry(Unit.Default, string.Empty, false, retry);
         }
         else if (headers.Bucket.IsSome(out string? bucket))
         {
-            ResourceScope scope = request.Scope;
-            if (scope.Channel.IsSome(out Snowflake channel))
+            Unit SetFunc<T>(ResourceLimiter<T> limiter, T scope)
             {
-                _channelCache.SetRetry(channel, bucket, retry);
+                bool shared = headers.Scope.IsSome(out string? limitScope) && limitScope == "shared";
+                limiter.SetRetry(scope, bucket, shared, retry);
+                return Unit.Default;
             }
-            else if (scope.InteractionToken.IsSome(out string? interactionToken))
-            {
-                _interactionCache.SetRetry(interactionToken, bucket, retry);
-            }
-            else if (scope.Webhook.IsSome(out Snowflake webhook))
-            {
-                _webhookCache.SetRetry(webhook, bucket, retry);
-            }
-            else if (scope.Guild.IsSome(out Snowflake guild))
-            {
-                _guildCache.SetRetry(guild, bucket, retry);
-            }
-            else
-            {
-                _globalCache.SetRetry(Unit.Default, bucket, retry);
-            }
+
+            ScopedAction(request.Scope, SetFunc, SetFunc, SetFunc);
+        }
+        else
+        {
+            _logger.LogWarning("Rate limit headers and content are neither global nor bucketed. Ignoring.");
         }
     }
 
-    private void UpdateBuckets(DiscordHttpRequest request, RateLimitHeaders headers)
+    private void UpdateBuckets(DiscordHttpRequest request, RateLimitHeaders limitHeaders)
     {
-        if (!headers.Bucket.IsSome(out string? newBucket))
+        if (!limitHeaders.Bucket.IsSome(out string? newBucket))
         {
             return;
         }
@@ -280,22 +299,22 @@ public class DiscordHttpClient : IDiscordHttpClient
                                method, url, newBucket);
     }
 
-    private void LogRequestResponse(DiscordHttpRequest request,                 HttpStatusCode status, RateLimitHeaders headers,
-                                    RateLimitContent?  rateLimitContent = null, ErrorContent?  errorContent = null)
+    private void LogRequestResponse(DiscordHttpRequest request,             HttpStatusCode status, RateLimitHeaders limitHeaders,
+                                    RateLimitContent?  limitContent = null, ErrorContent?  errorContent = null)
     {
         HttpMethod method = request.Method;
         string path = request.GetPath();
         var statusNumber = (int)status;
         string? statusName = Enum.GetName(status);
 
-        if (rateLimitContent is not null && rateLimitContent.RetryAfter.IsSome(out float retryAfter))
+        if (limitContent is not null && limitContent.RetryAfter.IsSome(out float retryAfter))
         {
             string bucketName;
-            if (headers.Global.IsSome(out bool global) && global)
+            if (limitHeaders.Global.IsSome(out bool global) && global)
             {
                 bucketName = "global";
             }
-            else if (headers.Bucket.IsSome(out string? bucket))
+            else if (limitHeaders.Bucket.IsSome(out string? bucket))
             {
                 bucketName = bucket;
             }
@@ -309,9 +328,9 @@ public class DiscordHttpClient : IDiscordHttpClient
                 "{method} {path} -> {statusNumber} {statusName}. Rate limited at bucket {bucketName}; retry after {time}.",
                 method, path, statusNumber, statusName, bucketName, time);
         }
-        else if (headers.Remaining.IsSome(out int remaining) &&
-            headers.Limit.IsSome(out int limit) &&
-            headers.ResetAfter.IsSome(out double resetAfter))
+        else if (limitHeaders.Remaining.IsSome(out int remaining) &&
+            limitHeaders.Limit.IsSome(out int limit) &&
+            limitHeaders.ResetAfter.IsSome(out double resetAfter))
         {
             var time = TimeSpan.FromSeconds(resetAfter);
             _logger.LogDebug(
@@ -351,7 +370,48 @@ public class DiscordHttpClient : IDiscordHttpClient
         }
     }
 
+    private T ScopedAction<T>(ResourceScope                                  scope,
+                              Func<ResourceLimiter<Snowflake>, Snowflake, T> snowflakeFunc,
+                              Func<ResourceLimiter<string>, string, T>       stringFunc,
+                              Func<ResourceLimiter<Unit>, Unit, T>           unitFunc)
+    {
+        Task<T> task = ScopedAction(scope,
+                                    (limiter, s) => Task.FromResult(snowflakeFunc(limiter, s)),
+                                    (limiter, s) => Task.FromResult(stringFunc(limiter, s)),
+                                    (limiter, s) => Task.FromResult(unitFunc(limiter, s)));
+        return task.Result;
+    }
+
+    private async Task<T> ScopedAction<T>(ResourceScope                                        scope,
+                                          Func<ResourceLimiter<Snowflake>, Snowflake, Task<T>> snowflakeFunc,
+                                          Func<ResourceLimiter<string>, string, Task<T>>       stringFunc,
+                                          Func<ResourceLimiter<Unit>, Unit, Task<T>>           unitFunc)
+    {
+        if (scope.Channel.IsSome(out Snowflake channel))
+        {
+            return await snowflakeFunc(_channelLimiter, channel);
+        }
+        else if (scope.InteractionToken.IsSome(out string? interactionToken))
+        {
+            return await stringFunc(_interactionLimiter, interactionToken);
+        }
+        else if (scope.Webhook.IsSome(out Snowflake webhook))
+        {
+            return await snowflakeFunc(_webhookLimiter, webhook);
+        }
+        else if (scope.Guild.IsSome(out Snowflake guild))
+        {
+            return await snowflakeFunc(_guildLimiter, guild);
+        }
+        else
+        {
+            return await unitFunc(_globalLimiter, Unit.Default);
+        }
+    }
+
     private record struct Endpoint(HttpMethod Method, string Url);
+
+    private record Response(HttpResponseMessage Message, RateLimitHeaders LimitHeaders, RateLimitContent? LimitContent);
 
     #region IDisposable
 
