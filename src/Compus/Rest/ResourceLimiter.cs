@@ -1,21 +1,24 @@
+using AsyncKeyedLock;
+using Compus.Caching;
 using System;
 using System.Collections.Generic;
-using System.Reactive.Disposables;
 using System.Threading.Tasks;
-using Compus.Caching;
 
 namespace Compus.Rest;
 
 internal class ResourceLimiter<TScope>
 {
-    private readonly KeyedLock<ScopedBucket<TScope>> _resourceLock;
+    private readonly AsyncKeyedLocker<ScopedBucket<TScope>> _resourceLock;
     private readonly Cache<ScopedBucket<TScope>, long> _sharedTimes;
     private readonly Cache<ScopedBucket<TScope>, long> _userTimes;
     private readonly object _cacheLock = new();
 
     public ResourceLimiter(int semaphorePoolSize, IEvictionPolicy evictionPolicy)
     {
-        _resourceLock = new KeyedLock<ScopedBucket<TScope>>(semaphorePoolSize);
+        _resourceLock = new AsyncKeyedLocker<ScopedBucket<TScope>>(o => {
+            o.PoolSize = semaphorePoolSize;
+            o.PoolInitialFill = 1;
+        });
         _sharedTimes = new Cache<ScopedBucket<TScope>, long>(BucketComparer, evictionPolicy);
         _userTimes = new Cache<ScopedBucket<TScope>, long>(BucketComparer,   evictionPolicy);
     }
@@ -25,8 +28,7 @@ internal class ResourceLimiter<TScope>
     public async Task<IDisposable> Lock(TScope scope, string bucket)
     {
         var key = new ScopedBucket<TScope>(scope, bucket);
-        await _resourceLock.WaitAsync(key);
-        return Disposable.Create(() => _resourceLock.Release(key));
+        return await _resourceLock.LockAsync(key).ConfigureAwait(false);
     }
 
     public long GetRetry(TScope scope, string bucket)
